@@ -1,0 +1,40 @@
+{
+  "name": "roundlog-api",
+  "version": "1.0.0",
+  "description": "RoundLog — API Backend para gestão clínica hospitalar",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tspc",
+    "start": "node dist/server.js",
+    "db:migrate": "prisma migrate dev",
+    "db:push": "prisma db push",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:studio": "prisma studio",
+    "db:generate": "prisma generate"
+  },
+  "keywords": [],
+  "license": "MIT",
+  "dependencies": {
+    "@fastify/cors": "^9.0.1",
+    "@fastify/jwt": "^8.0.1",
+    "@fastify/multipart": "^8.3.0",
+    "@google/generative-ai": "^0.21.0",
+    "@prisma/client": "^5.22.0",
+    "bcryptjs": "^2.4.3",
+    "bullmq": "^5.25.0",
+    "fastify": "^4.28.1",
+    "ioredis": "^5.4.1",
+    "resend": "^4.0.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.9.0",
+    "prisma": "^5.22.0",
+    "ts-patch": "^3.2.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "typescript-transform-paths": "^3.5.2"
+  }
+}

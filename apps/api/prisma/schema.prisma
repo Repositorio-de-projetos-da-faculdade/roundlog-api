@@ -1,0 +1,294 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  crm          String?  // médico
+  coren        String?  // enfermeiro
+  role         Role
+  hospitalId   String
+  hospital     Hospital @relation(fields: [hospitalId], references: [id])
+  createdAt    DateTime @default(now())
+
+  visits         Visit[]
+  nursingShifts  NursingShift[]
+  handoffAcks    HandoffAck[]
+}
+
+enum Role {
+  ADMIN
+  PHYSICIAN
+  NURSE
+  TECHNICIAN
+  MANAGER
+}
+
+model Hospital {
+  id        String   @id @default(cuid())
+  name      String
+  cnpj      String   @unique
+  createdAt DateTime @default(now())
+  users     User[]
+  wards     Ward[]
+}
+
+model Ward {
+  id         String   @id @default(cuid())
+  hospitalId String
+  hospital   Hospital @relation(fields: [hospitalId], references: [id])
+  name       String
+  floor      String?
+  specialty  String?
+  beds       Bed[]
+  shifts     NursingShift[]
+  handoffs   ShiftHandoff[]
+}
+
+model Bed {
+  id         String    @id @default(cuid())
+  wardId     String
+  ward       Ward      @relation(fields: [wardId], references: [id])
+  code       String
+  status     BedStatus @default(AVAILABLE)
+  admissions Admission[]
+}
+
+enum BedStatus {
+  AVAILABLE
+  OCCUPIED
+  MAINTENANCE
+}
+
+model Patient {
+  id         String      @id @default(cuid())
+  hospitalId String
+  name       String
+  dob        DateTime
+  cpf        String      @unique
+  bloodType  String?
+  allergies  String[]
+  createdAt  DateTime    @default(now())
+  admissions Admission[]
+}
+
+model Admission {
+  id           String    @id @default(cuid())
+  patientId    String
+  patient      Patient   @relation(fields: [patientId], references: [id])
+  bedId        String
+  bed          Bed       @relation(fields: [bedId], references: [id])
+  admittedById String
+  admittedAt   DateTime  @default(now())
+  dischargedAt DateTime?
+  diagnosis    String?
+  status       AdmissionStatus @default(ACTIVE)
+  visits       Visit[]
+  familyContacts FamilyContact[]
+  familyUpdates  FamilyUpdate[]
+  familyMessages FamilyMessage[]
+}
+
+enum AdmissionStatus {
+  ACTIVE
+  DISCHARGED
+}
+
+model FamilyContact {
+  id          String    @id @default(cuid())
+  admissionId String
+  admission   Admission @relation(fields: [admissionId], references: [id])
+  name        String
+  relationship String
+  phone       String
+  accessToken String    @unique @default(cuid())
+}
+
+model Visit {
+  id            String      @id @default(cuid())
+  admissionId   String
+  admission     Admission   @relation(fields: [admissionId], references: [id])
+  physicianId   String
+  physician     User        @relation(fields: [physicianId], references: [id])
+  startedAt     DateTime    @default(now())
+  finishedAt    DateTime?
+  audioUrl      String?
+  transcriptRaw String?
+  structuredJson Json?
+  status        VisitStatus @default(RECORDING)
+  conducts      Conduct[]
+  pendings      Pending[]
+  alerts        ClinicalAlert[]
+  prescriptions Prescription[]
+  familyUpdates FamilyUpdate[]
+}
+
+enum VisitStatus {
+  RECORDING
+  PROCESSING
+  READY
+  ERROR
+}
+
+model Conduct {
+  id          String        @id @default(cuid())
+  visitId     String
+  visit       Visit         @relation(fields: [visitId], references: [id])
+  description String
+  priority    Priority      @default(MEDIUM)
+  deadlineAt  DateTime?
+  status      ConductStatus @default(OPEN)
+  resolvedById String?
+  resolvedAt  DateTime?
+  executions  NursingExecution[]
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum ConductStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+}
+
+model Pending {
+  id             String   @id @default(cuid())
+  visitId        String
+  visit          Visit    @relation(fields: [visitId], references: [id])
+  description    String
+  assignedToRole String?
+  status         ConductStatus @default(OPEN)
+  resolvedById   String?
+  resolvedAt     DateTime?
+}
+
+model ClinicalAlert {
+  id             String   @id @default(cuid())
+  visitId        String
+  visit          Visit    @relation(fields: [visitId], references: [id])
+  type           String   // drug_interaction | allergy | critical_value | fall_risk
+  description    String
+  severity       String   // critical | warning | info
+  acknowledgedById String?
+  acknowledgedAt DateTime?
+}
+
+model Prescription {
+  id          String   @id @default(cuid())
+  visitId     String
+  visit       Visit    @relation(fields: [visitId], references: [id])
+  medication  String
+  dose        String
+  route       String
+  frequency   String
+  duration    String?
+  notes       String?
+}
+
+model NursingShift {
+  id        String    @id @default(cuid())
+  wardId    String
+  ward      Ward      @relation(fields: [wardId], references: [id])
+  nurseId   String
+  nurse     User      @relation(fields: [nurseId], references: [id])
+  startedAt DateTime
+  endedAt   DateTime?
+  type      ShiftType
+  executions NursingExecution[]
+  handoffsFrom ShiftHandoff[] @relation("FromShift")
+  handoffsTo   ShiftHandoff[] @relation("ToShift")
+}
+
+enum ShiftType {
+  MORNING
+  AFTERNOON
+  NIGHT
+}
+
+model NursingExecution {
+  id         String   @id @default(cuid())
+  conductId  String
+  conduct    Conduct  @relation(fields: [conductId], references: [id])
+  shiftId    String
+  shift      NursingShift @relation(fields: [shiftId], references: [id])
+  nurseId    String
+  executedAt DateTime @default(now())
+  notes      String?
+  status     String   @default("done") // done | partial | not_possible
+}
+
+model ShiftHandoff {
+  id           String     @id @default(cuid())
+  wardId       String
+  ward         Ward       @relation(fields: [wardId], references: [id])
+  fromShiftId  String
+  fromShift    NursingShift @relation("FromShift", fields: [fromShiftId], references: [id])
+  toShiftId    String?
+  toShift      NursingShift? @relation("ToShift", fields: [toShiftId], references: [id])
+  generatedAt  DateTime   @default(now())
+  summaryJson  Json
+  status       HandoffStatus @default(PENDING)
+  acks         HandoffAck[]
+}
+
+enum HandoffStatus {
+  PENDING
+  ACKNOWLEDGED
+}
+
+model HandoffAck {
+  id             String      @id @default(cuid())
+  handoffId      String
+  handoff        ShiftHandoff @relation(fields: [handoffId], references: [id])
+  userId         String
+  user           User        @relation(fields: [userId], references: [id])
+  acknowledgedAt DateTime    @default(now())
+  signatureToken String      @unique @default(cuid())
+}
+
+model FamilyUpdate {
+  id          String    @id @default(cuid())
+  admissionId String
+  admission   Admission @relation(fields: [admissionId], references: [id])
+  visitId     String?
+  visit       Visit?    @relation(fields: [visitId], references: [id])
+  contentLay  String    // texto em linguagem leiga gerado pelo LLM
+  generatedAt DateTime  @default(now())
+  readAt      DateTime?
+}
+
+model FamilyMessage {
+  id          String    @id @default(cuid())
+  admissionId String
+  admission   Admission @relation(fields: [admissionId], references: [id])
+  fromFamily  Boolean   @default(true)
+  content     String
+  sentAt      DateTime  @default(now())
+  readAt      DateTime?
+}
+
+model NearMiss {
+  id                   String   @id @default(cuid())
+  hospitalId           String
+  wardId               String?
+  reportedAt           DateTime @default(now())
+  category             String   // medication | procedure | communication | equipment | fall
+  severity             String   // near_miss | no_harm | harm
+  description          String
+  aiClassificationJson Json?
+  isAnonymous          Boolean  @default(true)
+}

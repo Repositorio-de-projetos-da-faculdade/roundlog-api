@@ -1,24 +1,106 @@
-# RoundLog — Guia de Arquitetura Backend
+# RoundLog API — Backend de Gestão Clínica Hospitalar
 
-> Documento de referência para os devs de backend (P1, P2 e P5). Leia antes de escrever qualquer linha de código.
+> Sistema de registro e acompanhamento de visitas médicas com processamento de áudio via IA, dashboard de enfermagem, passagem de plantão automatizada e portal para familiares.
 
 ---
 
-## Stack Obrigatória
+## Status do Projeto
+
+| Área | Status | Observação |
+|---|---|---|
+| Infraestrutura (Docker, DB, Redis) | ✅ Pronto | PostgreSQL 15 + Redis 7 via Docker Compose |
+| Schema do banco (Prisma) | ✅ Pronto | 20 models, 10 enums, migration aplicada |
+| Seed de demonstração | ✅ Pronto | Hospital, 4 usuários, ala, 6 leitos, 2 pacientes, 2 internações |
+| Autenticação (JWT) | ✅ Pronto | Register, login, refresh, logout |
+| CRUD Hospitais | ✅ Pronto | GET hospital do usuário autenticado |
+| CRUD Alas e Leitos | ✅ Pronto | Create/list wards, create/list beds |
+| CRUD Pacientes | ✅ Pronto | Create, get com histórico de internações |
+| CRUD Internações | ✅ Pronto | Create (ocupa leito), discharge (libera leito), get detalhado |
+| Visitas Médicas | ✅ Pronto | Create, get, upload de áudio, resolve condutas/pendências/alertas |
+| Dashboard Enfermagem | ✅ Pronto | Dashboard de ala, execução de conduta, condutas em atraso |
+| Passagem de Plantão | ✅ Pronto | Geração com LLM, get, acknowledge |
+| Portal Familiar | ✅ Pronto | Updates, summary com LLM, mensagens (acesso via token) |
+| Near Misses | ✅ Pronto | Registro, summary agregado, patterns |
+| Analytics | ✅ Pronto | Ocupação de ala, compliance, handoffs |
+| Pipeline de Áudio | ⚠️ Parcial | Estrutura do worker pronta, falta storage local real |
+| Integração Gemini | ⚠️ Parcial | Cliente pronto, falta API key e testes com áudio real |
+| E-mails (Resend) | ❌ Pendente | Nenhum e-mail implementado |
+| Testes | ❌ Pendente | Nenhum teste escrito |
+| Notificações | ❌ Pendente | Alertas de conduta em atraso não implementados |
+
+---
+
+## Stack
 
 | Tecnologia | Versão | Uso |
 |---|---|---|
 | Node.js | 20 LTS | Runtime |
-| Fastify | v4 | Framework HTTP — mais rápido que Express |
-| TypeScript | 5.x | Obrigatório em todos os arquivos |
+| Fastify | v4 | Framework HTTP |
+| TypeScript | 5.x | Tipagem em todos os arquivos |
 | Prisma | v5 | ORM + migrations |
-| PostgreSQL | 15 | Banco principal |
-| Zod | v3 | Validação de schemas de request/response |
-| Bull | v4 | Fila de processamento assíncrono (áudio) |
-| Redis | 7 | Backend da fila Bull |
-| JWT + bcrypt | — | Auth |
-| Resend | latest | E-mails de notificação |
-| Uploadthing ou AWS S3 | — | Storage de arquivos de áudio |
+| PostgreSQL | 15 | Banco principal (via Docker) |
+| Zod | v3 | Validação de schemas |
+| BullMQ | v5 | Fila de processamento assíncrono |
+| Redis | 7 | Backend da fila BullMQ (via Docker) |
+| JWT (Fastify JWT) | — | Autenticação |
+| bcryptjs | — | Hash de senhas |
+| Gemini AI | — | Processamento de áudio e geração de resumos |
+| Resend | — | E-mails de notificação (não implementado) |
+| Storage Local | — | Arquivos de áudio salvos localmente |
+
+---
+
+## Como Rodar
+
+### Pré-requisitos
+
+- Node.js 20+
+- Docker e Docker Compose
+- npm
+
+### 1. Subir os containers (PostgreSQL + Redis)
+
+```bash
+docker compose up -d
+```
+
+### 2. Instalar dependências
+
+```bash
+cd apps/api
+npm install
+```
+
+### 3. Configurar variáveis de ambiente
+
+```bash
+cp .env.example .env
+# Edite o .env com suas chaves (Gemini, Resend, etc.)
+```
+
+### 4. Rodar migrations e seed
+
+```bash
+npm run db:migrate
+npm run db:seed
+```
+
+### 5. Iniciar o servidor
+
+```bash
+npm run dev
+```
+
+O servidor inicia em `http://localhost:3001`.
+
+### Usuários demo (senha: `123456`)
+
+| E-mail | Role | Permissões |
+|---|---|---|
+| `admin@roundlog.dev` | ADMIN | Acesso total |
+| `joao@roundlog.dev` | PHYSICIAN | Visitas, internações, pacientes |
+| `maria@roundlog.dev` | NURSE | Dashboard, execução de condutas |
+| `carlos@roundlog.dev` | MANAGER | Analytics, near misses, relatórios |
 
 ---
 
@@ -28,731 +110,350 @@
 apps/
   api/
     src/
-      server.ts               ← Entry point: instância Fastify + plugins
-      app.ts                  ← Registro de rotas e plugins
-      
+      server.ts                     ← Entry point
+      app.ts                        ← Registro de rotas, plugins e error handler
+
       modules/
         auth/
-          auth.routes.ts      ← POST /auth/login, /auth/register, /auth/refresh
-          auth.service.ts     ← lógica de negócio
-          auth.schema.ts      ← Zod schemas de request/response
-        
+          auth.routes.ts             ← POST /auth/login, /register, /refresh, /logout
+          auth.service.ts            ← Lógica de register e login
+          auth.schema.ts             ← Zod: registerSchema, loginSchema, refreshSchema
+
         hospitals/
-          hospitals.routes.ts
-          hospitals.service.ts
-          hospitals.schema.ts
-        
+          hospitals.routes.ts        ← GET /hospital
+          hospitals.service.ts       ← getHospital, createHospital
+          hospitals.schema.ts        ← Zod: createHospitalSchema
+
         wards/
-          wards.routes.ts     ← CRUD de alas e leitos
-          wards.service.ts
-          wards.schema.ts
-        
+          wards.routes.ts            ← POST/GET /wards, POST/GET /wards/:id/beds
+          wards.service.ts           ← CRUD wards + beds (scoped por hospital)
+          wards.schema.ts            ← Zod: createWardSchema, createBedSchema
+
         patients/
-          patients.routes.ts
-          patients.service.ts
-          patients.schema.ts
-        
+          patients.routes.ts         ← POST /patients, GET /patients/:id
+          patients.service.ts        ← createPatient (verifica CPF), getPatient
+          patients.schema.ts         ← Zod: createPatientSchema
+
         admissions/
-          admissions.routes.ts ← abertura/encerramento de internação
-          admissions.service.ts
-          admissions.schema.ts
-        
+          admissions.routes.ts       ← POST /admissions, PATCH discharge, GET /:id
+          admissions.service.ts      ← create (ocupa leito via $transaction), discharge (libera)
+          admissions.schema.ts       ← Zod: createAdmissionSchema
+
         visits/
-          visits.routes.ts    ← criação, upload de áudio, leitura estruturada
-          visits.service.ts   ← orquestra: salva áudio → enfileira processamento
-          visits.schema.ts
-          visits.processor.ts ← worker Bull: chama Gemini + salva resultado
-        
+          visits.routes.ts           ← POST /visits, POST audio, GET, PATCH resolve/ack
+          visits.service.ts          ← create, uploadAndEnqueue, get, resolve, acknowledge
+          visits.schema.ts           ← Zod: createVisitSchema
+          visits.processor.ts        ← Worker BullMQ: Gemini + salva resultado
+
         nursing/
-          nursing.routes.ts   ← dashboard de ala, execução de conduta
-          nursing.service.ts
-          nursing.schema.ts
-        
+          nursing.routes.ts          ← GET dashboard, POST execute, GET overdue
+          nursing.service.ts         ← getWardDashboard, executeConduct, getOverdue
+          nursing.schema.ts          ← Zod: executeConductSchema
+
         handoffs/
-          handoffs.routes.ts  ← geração e confirmação de plantão
-          handoffs.service.ts ← consolida dados + chama LLM para resumo
-          handoffs.schema.ts
-        
+          handoffs.routes.ts         ← POST generate, GET /:id, POST acknowledge
+          handoffs.service.ts        ← generateHandoff (LLM), getHandoff, acknowledge
+          handoffs.schema.ts         ← Zod: generateHandoffSchema
+
         family/
-          family.routes.ts    ← resumo para familiar, mensagens
-          family.service.ts
-          family.schema.ts
-        
+          family.routes.ts           ← GET updates, GET summary, POST messages
+          family.service.ts          ← getUpdates, getSummary (LLM), sendMessage
+          family.schema.ts           ← Zod: sendMessageSchema
+
         near-misses/
-          near-misses.routes.ts
-          near-misses.service.ts
-          near-misses.schema.ts
-        
+          near-misses.routes.ts      ← POST create, GET summary, GET patterns
+          near-misses.service.ts     ← create, getSummary (groupBy), getPatterns
+          near-misses.schema.ts      ← Zod: createNearMissSchema
+
         analytics/
-          analytics.routes.ts ← indicadores para gestão
-          analytics.service.ts
-          analytics.schema.ts
-      
+          analytics.routes.ts        ← GET ward/:id, GET compliance, GET handoffs
+          analytics.service.ts       ← wardAnalytics, compliance, handoffMetrics
+          analytics.schema.ts        ← Zod: wardAnalyticsParams
+
       shared/
-        prisma.ts             ← instância singleton do PrismaClient
-        gemini.ts             ← instância do cliente Gemini + helpers
-        queue.ts              ← instância do Bull + definição de filas
-        errors.ts             ← classes de erro customizadas
+        prisma.ts                    ← Singleton PrismaClient
+        gemini.ts                    ← Cliente Gemini AI + prompts + tipos
+        queue.ts                     ← BullMQ queue + Redis connection
+        errors.ts                    ← AppError, UnauthorizedError, ForbiddenError, etc.
         middleware/
-          authenticate.ts     ← hook Fastify: valida JWT
-          authorize.ts        ← hook Fastify: verifica role
+          authenticate.ts            ← Hook JWT: valida token, popula req.user
+          authorize.ts               ← Hook de role: verifica permissão
         utils/
-          audio.ts            ← helpers de conversão de áudio
-          date.ts
-          hash.ts
+          audio.ts                   ← Validação de MIME, geração de nomes
+          date.ts                    ← Formatação BR, isOverdue, addHours
+          hash.ts                    ← hashPassword, verifyPassword (bcryptjs)
 
       jobs/
-        audio.worker.ts       ← processo separado que consome a fila de áudio
+        audio.worker.ts              ← Entry point do worker de áudio (processo separado)
 
     prisma/
-      schema.prisma           ← schema completo do banco
-      migrations/             ← geradas pelo Prisma automaticamente
-      seed.ts                 ← dados para demonstração
+      schema.prisma                  ← Schema completo (20 models, 10 enums)
+      migrations/                    ← Migration initial_schema aplicada
+      seed.ts                        ← Dados de demonstração
 
-    .env                      ← variáveis de ambiente (não comitar)
-    .env.example              ← template com todas as variáveis necessárias
+    .env                             ← Variáveis de ambiente (não comitar)
+    .env.example                     ← Template
+    package.json
+    tsconfig.json
 ```
 
 ---
 
-## Schema Prisma Completo
+## Endpoints Implementados
 
-```prisma
-// prisma/schema.prisma
-generator client {
-  provider = "prisma-client-js"
-}
+### 🔓 Auth (sem autenticação)
 
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
+| Método | Rota | Descrição | Status |
+|---|---|---|---|
+| `POST` | `/auth/register` | Cadastra novo usuário | ✅ |
+| `POST` | `/auth/login` | Login → retorna JWT + refresh token | ✅ |
+| `POST` | `/auth/refresh` | Renova JWT com refresh token | ✅ |
+| `POST` | `/auth/logout` | Logout (client-side) | ✅ |
 
-model User {
-  id           String   @id @default(cuid())
-  name         String
-  email        String   @unique
-  passwordHash String
-  crm          String?  // médico
-  coren        String?  // enfermeiro
-  role         Role
-  hospitalId   String
-  hospital     Hospital @relation(fields: [hospitalId], references: [id])
-  createdAt    DateTime @default(now())
+### 🏥 Hospital (autenticado)
 
-  visits         Visit[]
-  nursingShifts  NursingShift[]
-  handoffAcks    HandoffAck[]
-}
+| Método | Rota | Descrição | Roles | Status |
+|---|---|---|---|---|
+| `GET` | `/hospital` | Dados do hospital do usuário | Todos | ✅ |
 
-enum Role {
-  ADMIN
-  PHYSICIAN
-  NURSE
-  TECHNICIAN
-  MANAGER
-}
+### 🏢 Alas e Leitos (autenticado)
 
-model Hospital {
-  id        String   @id @default(cuid())
-  name      String
-  cnpj      String   @unique
-  createdAt DateTime @default(now())
-  users     User[]
-  wards     Ward[]
-}
+| Método | Rota | Descrição | Roles | Status |
+|---|---|---|---|---|
+| `POST` | `/wards` | Cria nova ala | ADMIN, MANAGER | ✅ |
+| `GET` | `/wards` | Lista alas do hospital | Todos | ✅ |
+| `POST` | `/wards/:id/beds` | Cria leito em uma ala | ADMIN, MANAGER | ✅ |
+| `GET` | `/wards/:id/beds` | Lista leitos de uma ala | Todos | ✅ |
 
-model Ward {
-  id         String   @id @default(cuid())
-  hospitalId String
-  hospital   Hospital @relation(fields: [hospitalId], references: [id])
-  name       String
-  floor      String?
-  specialty  String?
-  beds       Bed[]
-  shifts     NursingShift[]
-  handoffs   ShiftHandoff[]
-}
+### 🧑‍⚕️ Pacientes (autenticado)
 
-model Bed {
-  id         String    @id @default(cuid())
-  wardId     String
-  ward       Ward      @relation(fields: [wardId], references: [id])
-  code       String
-  status     BedStatus @default(AVAILABLE)
-  admissions Admission[]
-}
+| Método | Rota | Descrição | Roles | Status |
+|---|---|---|---|---|
+| `POST` | `/patients` | Cadastra paciente (verifica CPF único) | Todos | ✅ |
+| `GET` | `/patients/:id` | Dados do paciente + internações | Todos | ✅ |
 
-enum BedStatus {
-  AVAILABLE
-  OCCUPIED
-  MAINTENANCE
-}
+### 🛏️ Internações (autenticado)
 
-model Patient {
-  id         String      @id @default(cuid())
-  hospitalId String
-  name       String
-  dob        DateTime
-  cpf        String      @unique
-  bloodType  String?
-  allergies  String[]
-  createdAt  DateTime    @default(now())
-  admissions Admission[]
-}
+| Método | Rota | Descrição | Roles | Status |
+|---|---|---|---|---|
+| `POST` | `/admissions` | Abre internação (ocupa leito via `$transaction`) | PHYSICIAN, ADMIN | ✅ |
+| `PATCH` | `/admissions/:id/discharge` | Alta (libera leito via `$transaction`) | PHYSICIAN, ADMIN | ✅ |
+| `GET` | `/admissions/:id` | Internação com paciente, leito, visitas, contatos | Todos | ✅ |
 
-model Admission {
-  id           String    @id @default(cuid())
-  patientId    String
-  patient      Patient   @relation(fields: [patientId], references: [id])
-  bedId        String
-  bed          Bed       @relation(fields: [bedId], references: [id])
-  admittedById String
-  admittedAt   DateTime  @default(now())
-  dischargedAt DateTime?
-  diagnosis    String?
-  status       AdmissionStatus @default(ACTIVE)
-  visits       Visit[]
-  familyContacts FamilyContact[]
-  familyUpdates  FamilyUpdate[]
-  familyMessages FamilyMessage[]
-}
+### 📋 Visitas Médicas (autenticado)
 
-enum AdmissionStatus {
-  ACTIVE
-  DISCHARGED
-}
+| Método | Rota | Descrição | Roles | Status |
+|---|---|---|---|---|
+| `POST` | `/visits` | Inicia nova visita | PHYSICIAN | ✅ |
+| `POST` | `/visits/:id/audio` | Upload de áudio (multipart) → enfileira processamento | PHYSICIAN | ⚠️ Falta storage local |
+| `GET` | `/visits/:id` | Visita completa com condutas, pendências, alertas, prescrições | Todos | ✅ |
+| `PATCH` | `/conducts/:id/resolve` | Resolve uma conduta | Todos | ✅ |
+| `PATCH` | `/pendings/:id/resolve` | Resolve uma pendência | Todos | ✅ |
+| `PATCH` | `/alerts/:id/acknowledge` | Ciência de um alerta clínico | Todos | ✅ |
 
-model FamilyContact {
-  id          String    @id @default(cuid())
-  admissionId String
-  admission   Admission @relation(fields: [admissionId], references: [id])
-  name        String
-  relationship String
-  phone       String
-  accessToken String    @unique @default(cuid())
-}
+### 👩‍⚕️ Enfermagem (autenticado)
 
-model Visit {
-  id            String      @id @default(cuid())
-  admissionId   String
-  admission     Admission   @relation(fields: [admissionId], references: [id])
-  physicianId   String
-  physician     User        @relation(fields: [physicianId], references: [id])
-  startedAt     DateTime    @default(now())
-  finishedAt    DateTime?
-  audioUrl      String?
-  transcriptRaw String?
-  structuredJson Json?
-  status        VisitStatus @default(RECORDING)
-  conducts      Conduct[]
-  pendings      Pending[]
-  alerts        ClinicalAlert[]
-  prescriptions Prescription[]
-  familyUpdates FamilyUpdate[]
-}
+| Método | Rota | Descrição | Roles | Status |
+|---|---|---|---|---|
+| `GET` | `/wards/:id/dashboard` | Dashboard da ala com todos os leitos e status | Todos | ✅ |
+| `POST` | `/conducts/:id/execute` | Registra execução de conduta | NURSE, TECHNICIAN | ✅ |
+| `GET` | `/nursing/overdue` | Lista condutas em atraso | Todos | ✅ |
 
-enum VisitStatus {
-  RECORDING
-  PROCESSING
-  READY
-  ERROR
-}
+### 🔄 Passagem de Plantão (autenticado)
 
-model Conduct {
-  id          String        @id @default(cuid())
-  visitId     String
-  visit       Visit         @relation(fields: [visitId], references: [id])
-  description String
-  priority    Priority      @default(MEDIUM)
-  deadlineAt  DateTime?
-  status      ConductStatus @default(OPEN)
-  resolvedById String?
-  resolvedAt  DateTime?
-  executions  NursingExecution[]
-}
+| Método | Rota | Descrição | Roles | Status |
+|---|---|---|---|---|
+| `POST` | `/handoffs/generate` | Gera relatório + resumo via LLM | NURSE, ADMIN | ⚠️ Depende da API key Gemini |
+| `GET` | `/handoffs/:id` | Detalhes do handoff | Todos | ✅ |
+| `POST` | `/handoffs/:id/acknowledge` | Registra ciência do próximo turno | Todos | ✅ |
 
-enum Priority {
-  LOW
-  MEDIUM
-  HIGH
-  CRITICAL
-}
+### 👨‍👩‍👧 Portal Familiar (sem autenticação — acesso via token)
 
-enum ConductStatus {
-  OPEN
-  IN_PROGRESS
-  RESOLVED
-}
+| Método | Rota | Descrição | Status |
+|---|---|---|---|
+| `GET` | `/family/patient/:token/updates` | Lista atualizações do paciente | ✅ |
+| `GET` | `/family/patient/:token/summary` | Resumo em linguagem leiga (LLM) | ⚠️ Depende da API key Gemini |
+| `POST` | `/family/patient/:token/messages` | Envia mensagem para a equipe | ✅ |
 
-model Pending {
-  id             String   @id @default(cuid())
-  visitId        String
-  visit          Visit    @relation(fields: [visitId], references: [id])
-  description    String
-  assignedToRole String?
-  status         ConductStatus @default(OPEN)
-  resolvedById   String?
-  resolvedAt     DateTime?
-}
+### ⚠️ Near Misses (autenticado)
 
-model ClinicalAlert {
-  id             String   @id @default(cuid())
-  visitId        String
-  visit          Visit    @relation(fields: [visitId], references: [id])
-  type           String   // drug_interaction | allergy | critical_value | fall_risk
-  description    String
-  severity       String   // critical | warning | info
-  acknowledgedById String?
-  acknowledgedAt DateTime?
-}
+| Método | Rota | Descrição | Roles | Status |
+|---|---|---|---|---|
+| `POST` | `/near-misses` | Registra quase-erro (anônimo ou não) | Todos | ✅ |
+| `GET` | `/near-misses/summary` | Resumo agregado por categoria e severidade | MANAGER, ADMIN | ✅ |
+| `GET` | `/near-misses/patterns` | Padrões dos últimos 30 dias | MANAGER, ADMIN | ✅ |
 
-model Prescription {
-  id          String   @id @default(cuid())
-  visitId     String
-  visit       Visit    @relation(fields: [visitId], references: [id])
-  medication  String
-  dose        String
-  route       String
-  frequency   String
-  duration    String?
-  notes       String?
-}
+### 📊 Analytics (autenticado)
 
-model NursingShift {
-  id        String    @id @default(cuid())
-  wardId    String
-  ward      Ward      @relation(fields: [wardId], references: [id])
-  nurseId   String
-  nurse     User      @relation(fields: [nurseId], references: [id])
-  startedAt DateTime
-  endedAt   DateTime?
-  type      ShiftType
-  executions NursingExecution[]
-  handoffsFrom ShiftHandoff[] @relation("FromShift")
-  handoffsTo   ShiftHandoff[] @relation("ToShift")
-}
+| Método | Rota | Descrição | Roles | Status |
+|---|---|---|---|---|
+| `GET` | `/analytics/ward/:id` | Ocupação da ala (total, ocupados, taxa) | MANAGER, ADMIN | ✅ |
+| `GET` | `/analytics/compliance` | Taxa de resolução de condutas | MANAGER, ADMIN | ✅ |
+| `GET` | `/analytics/handoffs` | Taxa de ciência dos plantões | MANAGER, ADMIN | ✅ |
 
-enum ShiftType {
-  MORNING
-  AFTERNOON
-  NIGHT
-}
+### 🔧 Infraestrutura
 
-model NursingExecution {
-  id         String   @id @default(cuid())
-  conductId  String
-  conduct    Conduct  @relation(fields: [conductId], references: [id])
-  shiftId    String
-  shift      NursingShift @relation(fields: [shiftId], references: [id])
-  nurseId    String
-  executedAt DateTime @default(now())
-  notes      String?
-  status     String   @default("done") // done | partial | not_possible
-}
+| Método | Rota | Descrição | Status |
+|---|---|---|---|
+| `GET` | `/health` | Health check | ✅ |
 
-model ShiftHandoff {
-  id           String     @id @default(cuid())
-  wardId       String
-  ward         Ward       @relation(fields: [wardId], references: [id])
-  fromShiftId  String
-  fromShift    NursingShift @relation("FromShift", fields: [fromShiftId], references: [id])
-  toShiftId    String?
-  toShift      NursingShift? @relation("ToShift", fields: [toShiftId], references: [id])
-  generatedAt  DateTime   @default(now())
-  summaryJson  Json
-  status       HandoffStatus @default(PENDING)
-  acks         HandoffAck[]
-}
-
-enum HandoffStatus {
-  PENDING
-  ACKNOWLEDGED
-}
-
-model HandoffAck {
-  id             String      @id @default(cuid())
-  handoffId      String
-  handoff        ShiftHandoff @relation(fields: [handoffId], references: [id])
-  userId         String
-  user           User        @relation(fields: [userId], references: [id])
-  acknowledgedAt DateTime    @default(now())
-  signatureToken String      @unique @default(cuid())
-}
-
-model FamilyUpdate {
-  id          String    @id @default(cuid())
-  admissionId String
-  admission   Admission @relation(fields: [admissionId], references: [id])
-  visitId     String?
-  visit       Visit?    @relation(fields: [visitId], references: [id])
-  contentLay  String    // texto em linguagem leiga gerado pelo LLM
-  generatedAt DateTime  @default(now())
-  readAt      DateTime?
-}
-
-model FamilyMessage {
-  id          String    @id @default(cuid())
-  admissionId String
-  admission   Admission @relation(fields: [admissionId], references: [id])
-  fromFamily  Boolean   @default(true)
-  content     String
-  sentAt      DateTime  @default(now())
-  readAt      DateTime?
-}
-
-model NearMiss {
-  id                   String   @id @default(cuid())
-  hospitalId           String
-  wardId               String?
-  reportedAt           DateTime @default(now())
-  category             String   // medication | procedure | communication | equipment | fall
-  severity             String   // near_miss | no_harm | harm
-  description          String
-  aiClassificationJson Json?
-  isAnonymous          Boolean  @default(true)
-}
-```
+**Total: 33 endpoints implementados**
 
 ---
 
-## Padrões Obrigatórios
+## Schema do Banco (Prisma)
 
-### 1. Estrutura de rota (Fastify)
+### Models (20)
 
-```typescript
-// modules/visits/visits.routes.ts
-import { FastifyInstance } from "fastify";
-import { authenticate } from "@/shared/middleware/authenticate";
-import { authorize } from "@/shared/middleware/authorize";
-import { VisitsService } from "./visits.service";
-import { createVisitSchema, uploadAudioSchema } from "./visits.schema";
+| Model | Descrição | Relacionamentos principais |
+|---|---|---|
+| `User` | Profissionais do hospital | → Hospital, → Visits, → NursingShifts |
+| `Hospital` | Unidade hospitalar | → Users, → Wards |
+| `Ward` | Ala/setor do hospital | → Hospital, → Beds, → Shifts, → Handoffs |
+| `Bed` | Leito individual | → Ward, → Admissions |
+| `Patient` | Paciente cadastrado | → Admissions |
+| `Admission` | Internação ativa ou encerrada | → Patient, → Bed, → Visits, → FamilyContacts |
+| `FamilyContact` | Contato familiar com token de acesso | → Admission |
+| `Visit` | Visita médica (registro + áudio) | → Admission, → Physician, → Conducts, → Alerts |
+| `Conduct` | Conduta médica extraída da visita | → Visit, → NursingExecutions |
+| `Pending` | Pendência (lab, farmácia, etc.) | → Visit |
+| `ClinicalAlert` | Alerta clínico (interação, alergia) | → Visit |
+| `Prescription` | Prescrição médica | → Visit |
+| `NursingShift` | Turno de enfermagem | → Ward, → Nurse, → Executions |
+| `NursingExecution` | Execução de conduta pela enfermagem | → Conduct, → Shift |
+| `ShiftHandoff` | Passagem de plantão | → Ward, → FromShift, → ToShift, → Acks |
+| `HandoffAck` | Ciência da passagem | → Handoff, → User |
+| `FamilyUpdate` | Atualização para familiar (linguagem leiga) | → Admission, → Visit |
+| `FamilyMessage` | Mensagem entre familiar e equipe | → Admission |
+| `NearMiss` | Registro de quase-erro | Standalone (hospitalId, wardId) |
 
-export async function visitsRoutes(app: FastifyInstance) {
-  const service = new VisitsService();
+### Enums (10)
 
-  app.post("/visits", {
-    preHandler: [authenticate, authorize(["PHYSICIAN"])],
-    schema: { body: createVisitSchema },
-  }, async (req, reply) => {
-    const visit = await service.createVisit(req.body, req.user.id);
-    return reply.status(201).send(visit);
-  });
+`Role` · `BedStatus` · `AdmissionStatus` · `VisitStatus` · `Priority` · `ConductStatus` · `ShiftType` · `HandoffStatus`
 
-  app.post("/visits/:id/audio", {
-    preHandler: [authenticate, authorize(["PHYSICIAN"])],
-  }, async (req, reply) => {
-    const data = await req.file(); // multipart
-    await service.uploadAndEnqueueAudio(req.params.id, data);
-    return reply.status(202).send({ status: "processing" });
-  });
+---
 
-  app.get("/visits/:id", {
-    preHandler: [authenticate],
-  }, async (req, reply) => {
-    const visit = await service.getVisit(req.params.id, req.user);
-    return reply.send(visit);
-  });
-}
-```
+## O Que Falta Fazer
 
-### 2. Service: separação total de responsabilidades
+### 🔴 Prioridade Alta
 
-```typescript
-// modules/visits/visits.service.ts
-import { prisma } from "@/shared/prisma";
-import { audioQueue } from "@/shared/queue";
+#### 1. Storage Local de Áudio
+**Arquivo:** `src/modules/visits/visits.service.ts`
 
-export class VisitsService {
-  async createVisit(data: CreateVisitInput, physicianId: string) {
-    return prisma.visit.create({
-      data: {
-        admissionId: data.admissionId,
-        physicianId,
-        status: "RECORDING",
-      },
-    });
-  }
+O upload de áudio atualmente salva a URL como `local://uploads/visits/...` (placeholder). Precisa:
+- Criar pasta `uploads/` no projeto
+- Salvar o buffer do arquivo no disco local usando `fs.writeFile`
+- Servir os arquivos via rota estática do Fastify (`@fastify/static`)
+- Atualizar o `visits.service.ts` para salvar o caminho real
 
-  async uploadAndEnqueueAudio(visitId: string, file: MultipartFile) {
-    // 1. Salva o arquivo no storage
-    const audioUrl = await uploadToStorage(file);
+#### 2. Worker de Áudio Funcional
+**Arquivo:** `src/modules/visits/visits.processor.ts`
 
-    // 2. Atualiza o visit com a URL e muda status
-    await prisma.visit.update({
-      where: { id: visitId },
-      data: { audioUrl, status: "PROCESSING" },
-    });
+O worker tem `Buffer.from("placeholder")` no lugar do fetch real. Precisa:
+- Ler o arquivo de áudio do disco local (usando o caminho salvo no banco)
+- Enviar o buffer real para o Gemini
+- Tratar erros de arquivo não encontrado
 
-    // 3. Enfileira o processamento
-    await audioQueue.add("process-visit-audio", { visitId, audioUrl });
-  }
+#### 3. Configurar API Key do Gemini
+**Arquivo:** `.env`
 
-  async getVisit(id: string, user: AuthUser) {
-    return prisma.visit.findUniqueOrThrow({
-      where: { id },
-      include: { conducts: true, pendings: true, alerts: true, prescriptions: true },
-    });
-  }
-}
-```
+Substituir `GEMINI_API_KEY="sua-chave-gemini"` por uma chave real. Sem isso, os endpoints que dependem de IA (handoff generate, family summary, audio processing) vão falhar.
 
-### 3. Worker de processamento de áudio (Bull)
+#### 4. Classificação AI de Near Misses
+**Arquivo:** `src/modules/near-misses/near-misses.service.ts`
 
-```typescript
-// jobs/audio.worker.ts
-import { audioQueue } from "@/shared/queue";
-import { gemini } from "@/shared/gemini";
-import { prisma } from "@/shared/prisma";
+O campo `aiClassificationJson` existe no banco mas nunca é preenchido. Precisa:
+- Criar prompt no `gemini.ts` para classificar near misses
+- Chamar o Gemini no `create()` do service para classificar automaticamente
+- Salvar o resultado no campo `aiClassificationJson`
 
-audioQueue.process("process-visit-audio", async (job) => {
-  const { visitId, audioUrl } = job.data;
+---
 
-  try {
-    // 1. Busca o áudio
-    const audioBuffer = await fetchAudioBuffer(audioUrl);
+### 🟡 Prioridade Média
 
-    // 2. Envia para Gemini
-    const result = await gemini.processVisitAudio(audioBuffer);
+#### 5. Notificações de Conduta em Atraso
+O README original pede: "conduta em atraso → alerta (in-app primeiro, e-mail depois)".
 
-    // 3. Salva o resultado estruturado
-    await prisma.$transaction([
-      prisma.visit.update({
-        where: { id: visitId },
-        data: {
-          transcriptRaw: result.transcript,
-          structuredJson: result,
-          status: "READY",
-          finishedAt: new Date(),
-        },
-      }),
-      ...result.conducts.map((c) =>
-        prisma.conduct.create({ data: { visitId, ...c } })
-      ),
-      ...result.pendings.map((p) =>
-        prisma.pending.create({ data: { visitId, ...p } })
-      ),
-      ...result.alerts.map((a) =>
-        prisma.clinicalAlert.create({ data: { visitId, ...a } })
-      ),
-      ...result.prescriptions.map((p) =>
-        prisma.prescription.create({ data: { visitId, ...p } })
-      ),
-    ]);
-  } catch (error) {
-    await prisma.visit.update({
-      where: { id: visitId },
-      data: { status: "ERROR" },
-    });
-    throw error; // Bull vai fazer retry automático
-  }
-});
-```
+Precisa criar:
+- Um job agendado (cron via BullMQ) que roda a cada X minutos
+- Verifica condutas com `deadlineAt < now()` e `status != RESOLVED`
+- Cria registro de notificação (modelo novo ou in-memory)
+- Futuramente: enviar e-mail via Resend
 
-### 4. Integração Gemini — cliente centralizado
+#### 6. E-mails via Resend
+**Arquivos a criar:** `src/shared/resend.ts`
 
-```typescript
-// shared/gemini.ts
-import { GoogleGenerativeAI } from "@google/generative-ai";
+Cenários de e-mail previstos:
+- Notificação de conduta em atraso para enfermagem
+- Confirmação de cadastro
+- Alerta crítico para o médico responsável
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+Precisa:
+- Criar o cliente Resend em `shared/resend.ts`
+- Criar templates de e-mail
+- Integrar nos pontos certos (services)
 
-const VISIT_EXTRACTION_PROMPT = `
-Você é um assistente clínico especializado em estruturar informações médicas.
-Analise o áudio da visita médica e retorne SOMENTE um JSON válido com essa estrutura:
-{
-  "transcript": "transcrição completa do áudio",
-  "conducts": [
-    { "description": "...", "priority": "low|medium|high|critical", "deadline_hours": null }
-  ],
-  "pendings": [
-    { "description": "...", "assigned_to": "nursing|lab|pharmacy|radiology" }
-  ],
-  "alerts": [
-    { "type": "drug_interaction|allergy|critical_value|fall_risk|isolation", "severity": "critical|warning|info", "description": "..." }
-  ],
-  "prescriptions": [
-    { "medication": "...", "dose": "...", "route": "oral|iv|im|sc|topic", "frequency": "...", "duration": "..." }
-  ]
-}
-Retorne APENAS o JSON. Sem explicações.
-`;
+#### 7. Geração Automática de FamilyUpdate
+**Arquivo:** `src/modules/visits/visits.processor.ts`
 
-const FAMILY_SUMMARY_PROMPT = `
-Você escreve resumos de saúde para familiares de pacientes internados.
-Baseado no relatório clínico abaixo, escreva um texto em linguagem simples e empática:
-- Máximo 3 parágrafos
-- Sem jargão médico
-- Tom tranquilizador mas honesto
-- Não mencione valores de exame específicos sem contexto
-Relatório: {structured_json}
-`;
+Quando o worker processa uma visita e o status vira `READY`, deveria automaticamente:
+- Chamar `gemini.generateFamilySummary()` com o `structuredJson`
+- Criar um `FamilyUpdate` para cada `FamilyContact` da internação
 
-export const gemini = {
-  async processVisitAudio(audioBuffer: Buffer): Promise<VisitStructuredData> {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-    const audioPart = {
-      inlineData: { data: audioBuffer.toString("base64"), mimeType: "audio/webm" },
-    };
-    const result = await model.generateContent([VISIT_EXTRACTION_PROMPT, audioPart]);
-    const text = result.response.text();
-    return JSON.parse(text.replace(/```json|```/g, "").trim());
-  },
+#### 8. Refresh Token Seguro
+**Arquivo:** `src/modules/auth/auth.routes.ts`
 
-  async generateFamilySummary(structuredJson: object): Promise<string> {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-    const prompt = FAMILY_SUMMARY_PROMPT.replace(
-      "{structured_json}",
-      JSON.stringify(structuredJson, null, 2)
-    );
-    const result = await model.generateContent(prompt);
-    return result.response.text();
-  },
+Atualmente o refresh token é um JWT simples sem invalidação. Para produção:
+- Salvar refresh tokens no banco ou Redis
+- Implementar rotação de token (cada refresh gera novo refresh token)
+- Invalidar tokens no logout
+- Verificar se o token não foi revogado antes de renovar
 
-  async generateHandoffSummary(wardData: WardHandoffData): Promise<string> {
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-    const prompt = `
-      Gere um resumo de passagem de plantão claro e direto para a equipe de enfermagem.
-      Dados do turno: ${JSON.stringify(wardData, null, 2)}
-      Inclua: pacientes em atenção, condutas pendentes, alertas abertos e ocorrências relevantes.
-    `;
-    const result = await model.generateContent(prompt);
-    return result.response.text();
-  },
-};
-```
+---
 
-### 5. Middleware de autenticação
+### 🟢 Prioridade Baixa (Polish)
 
-```typescript
-// shared/middleware/authenticate.ts
-import { FastifyRequest, FastifyReply } from "fastify";
-import jwt from "jsonwebtoken";
+#### 9. Testes
+Precisa configurar framework de testes e criar:
+- Testes unitários dos services
+- Testes de integração dos endpoints (usando Fastify inject)
+- Testes do pipeline de áudio com mock do Gemini
 
-export async function authenticate(req: FastifyRequest, reply: FastifyReply) {
-  const token = req.headers.authorization?.replace("Bearer ", "");
-  if (!token) return reply.status(401).send({ error: "Token obrigatório" });
+#### 10. Validações Mais Robustas
+- Verificar que `hospitalId` do recurso bate com o do usuário em todas as rotas
+- Validar que o médico da visita pertence ao mesmo hospital da internação
+- Verificar que o leito pertence à mesma ala do hospital
 
-  try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET!) as JWTPayload;
-    req.user = payload;
-  } catch {
-    return reply.status(401).send({ error: "Token inválido ou expirado" });
-  }
-}
+#### 11. Rate Limiting e Segurança
+- Adicionar `@fastify/rate-limit`
+- Adicionar `@fastify/helmet`
+- Sanitização de inputs
+- Logs sem dados sensíveis (senha, tokens)
 
-// shared/middleware/authorize.ts
-export function authorize(roles: Role[]) {
-  return async (req: FastifyRequest, reply: FastifyReply) => {
-    if (!roles.includes(req.user.role)) {
-      return reply.status(403).send({ error: "Sem permissão para esta ação" });
-    }
-  };
-}
-```
+#### 12. Seed Avançado
+- Adicionar visitas com `structuredJson` preenchido
+- Adicionar condutas, alertas e prescrições demo
+- Adicionar near misses de exemplo
+- Adicionar handoffs de exemplo
+
+#### 13. Analytics Avançados
+- Filtro por período (query params `from` e `to`)
+- Tendências (comparação entre períodos)
+- Métricas por profissional
 
 ---
 
 ## Variáveis de Ambiente
 
 ```env
-# apps/api/.env
 DATABASE_URL="postgresql://user:password@localhost:5432/roundlog"
 REDIS_URL="redis://localhost:6379"
 JWT_SECRET="sua-chave-secreta-muito-longa-aqui"
 JWT_REFRESH_SECRET="outra-chave-secreta-aqui"
 GEMINI_API_KEY="sua-chave-gemini"
-STORAGE_URL="uploadthing-ou-s3-url"
+STORAGE_URL="local"
 RESEND_API_KEY="sua-chave-resend"
 PORT=3001
-```
-
----
-
-## Docker Compose (ambiente local)
-
-```yaml
-# docker-compose.yml (raiz do projeto)
-services:
-  postgres:
-    image: postgres:15
-    environment:
-      POSTGRES_DB: roundlog
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-
-volumes:
-  postgres_data:
-```
-
-Subir ambiente: `docker compose up -d`
-
----
-
-## Endpoints Completos da API
-
-```
-AUTH
-POST   /auth/register
-POST   /auth/login
-POST   /auth/refresh
-POST   /auth/logout
-
-HOSPITAL / ESTRUTURA
-GET    /hospital
-POST   /wards
-GET    /wards
-POST   /wards/:id/beds
-GET    /wards/:id/beds
-
-PACIENTES & INTERNAÇÕES
-POST   /patients
-GET    /patients/:id
-POST   /admissions
-PATCH  /admissions/:id/discharge
-GET    /admissions/:id
-
-VISITAS (core)
-POST   /visits
-POST   /visits/:id/audio          ← multipart, inicia processamento
-GET    /visits/:id                ← inclui conducts, pendings, alerts
-PATCH  /conducts/:id/resolve
-PATCH  /pendings/:id/resolve
-PATCH  /alerts/:id/acknowledge
-
-ENFERMAGEM
-GET    /wards/:id/dashboard       ← todos os leitos com status atual
-POST   /conducts/:id/execute      ← registro de execução pela enfermagem
-GET    /nursing/overdue           ← condutas em atraso
-
-PLANTÃO
-POST   /handoffs/generate         ← gera relatório + LLM summary
-GET    /handoffs/:id
-POST   /handoffs/:id/acknowledge  ← ciência do próximo turno
-
-FAMILIAR
-GET    /family/patient/:token/updates
-GET    /family/patient/:token/summary
-POST   /family/patient/:token/messages
-
-NEAR MISSES
-POST   /near-misses
-GET    /near-misses/summary       ← apenas gestores
-GET    /near-misses/patterns      ← apenas gestores
-
-ANALYTICS (gestores)
-GET    /analytics/ward/:id
-GET    /analytics/compliance
-GET    /analytics/handoffs
 ```
 
 ---
@@ -770,21 +471,25 @@ GET    /analytics/handoffs
 
 ---
 
-## Ordem de Desenvolvimento (Semanas 1 e 2)
+## Scripts Disponíveis
 
-**Semana 1 — Base:**
-- [ ] Setup Fastify + Prisma + PostgreSQL + Docker Compose
-- [ ] Migrations com schema completo
-- [ ] Auth: register, login, JWT, refresh token
-- [ ] CRUD de hospital, wards, beds
-- [ ] CRUD de patients e admissions
-- [ ] Pipeline de áudio: upload → Bull queue → worker Gemini → salvar resultado
-- [ ] Testes do pipeline com áudios reais
+```bash
+npm run dev          # Inicia servidor em modo watch (tsx watch)
+npm run build        # Compila TypeScript
+npm run start        # Roda build compilado
+npm run db:migrate   # Roda migrations Prisma
+npm run db:push      # Push schema sem migration
+npm run db:seed      # Seed do banco com dados demo
+npm run db:studio    # Abre Prisma Studio (GUI do banco)
+npm run db:generate  # Gera Prisma Client
+```
 
-**Semana 2 — MVP:**
-- [ ] Endpoints de visita completos
-- [ ] Dashboard de ala (`GET /wards/:id/dashboard`)
-- [ ] Execução de conduta pela enfermagem
-- [ ] Geração de relatório de plantão (handoff)
-- [ ] Confirmação de ciência do plantão
-- [ ] Notificações: conduta em atraso → alerta (in-app primeiro, e-mail depois)
+---
+
+## Docker Compose
+
+```bash
+docker compose up -d     # Sobe PostgreSQL + Redis
+docker compose down      # Para os containers
+docker compose logs -f   # Acompanha logs
+```
