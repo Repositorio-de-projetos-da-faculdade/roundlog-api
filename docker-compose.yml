@@ -1,32 +1,191 @@
+# RoundLog — orquestrador único de demo/estudo
+#
+# Sobe os 6 componentes do sistema em uma rede só:
+#   postgres   → banco (porta host 5433)
+#   redis      → filas/refresh tokens (porta host 6380)
+#   migrator   → roda `prisma migrate deploy` + `db seed` UMA vez, sai
+#   api        → Fastify (porta host 3001)
+#   worker     → BullMQ consumer (audio → Gemini)
+#   web        → Next.js dashboard médico (porta host 3000)
+#   pwa        → Next.js mobile + portal família (porta host 3002)
+#
+# Assume layout em disco:
+#   qualquer-pasta-vazia/
+#     ├─ roundlog-api/   ← este (docker-compose mora aqui)
+#     └─ roundlog-web/   ← clonado lado a lado
+#
+# Uso:
+#   cd roundlog-api
+#   cp .env.example .env   # preencher GEMINI_API_KEY e segredos
+#   docker compose up --build
+#
+# Depois de subir, abra:
+#   Web (médico):   http://localhost:3000
+#   PWA (mobile):   http://localhost:3002
+#   API health:     http://localhost:3001/health
+#
+# Credenciais de demo (geradas pelo seed):
+#   admin@roundlog.dev  / password123
+#   joao@roundlog.dev   / password123  (médico)
+#   maria@roundlog.dev  / password123  (enfermeira)
+
 services:
   postgres:
     image: postgres:15
     container_name: roundlog-postgres
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: roundlog
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      # host:container — uso 5433 no host para não conflitar com outros projetos
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U user -d roundlog"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
 
   redis:
     image: redis:7-alpine
     container_name: roundlog-redis
+    restart: unless-stopped
     ports:
       - "6380:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
+
+  # Roda UMA vez na subida: aplica migrations e popula o banco de demo.
+  # Depois de completar com exit 0, os outros serviços sobem.
+  migrator:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: roundlog-migrator
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    command: sh -c "npx prisma migrate deploy && npx prisma db seed"
+    restart: "no"
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: roundlog-api
+    restart: unless-stopped
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      COOKIE_SECRET: ${COOKIE_SECRET}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+      VAPID_SUBJECT: ${VAPID_SUBJECT}
+      STORAGE_URL: local
+      PORT: 3001
+      NODE_ENV: development
+      WEB_ORIGINS: http://localhost:3000,http://localhost:3002
+    ports:
+      - "3001:3001"
+    volumes:
+      # Bind mount do código pra hot reload — edita no host, reflete no container
+      - ./apps/api:/app
+      # node_modules como volume nomeado evita conflito Windows/Linux
+      - api_node_modules:/app/node_modules
+      # Áudios persistem entre restarts (worker e api compartilham)
+      - audio_storage:/app/uploads
+
+  worker:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: roundlog-worker
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      COOKIE_SECRET: ${COOKIE_SECRET}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+      VAPID_SUBJECT: ${VAPID_SUBJECT}
+      STORAGE_URL: local
+      NODE_ENV: development
+    volumes:
+      - ./apps/api:/app
+      - api_node_modules:/app/node_modules
+      - audio_storage:/app/uploads
+    command: ["npm", "run", "worker"]
+
+  web:
+    build:
+      context: ../roundlog-web/apps/web
+      dockerfile: Dockerfile
+    container_name: roundlog-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      # browser-side: precisa ser localhost porque é o browser do usuário
+      # quem chama a API, não o container Next
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      NEXT_PUBLIC_APP_NAME: RoundLog
+      NEXT_PUBLIC_FAMILY_PORTAL_URL: http://localhost:3002
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../roundlog-web/apps/web:/app
+      - web_node_modules:/app/node_modules
+      - web_next_cache:/app/.next
+
+  pwa:
+    build:
+      context: ../roundlog-web/apps/pwa
+      dockerfile: Dockerfile
+    container_name: roundlog-pwa
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      NEXT_PUBLIC_APP_NAME: RoundLog
+      NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+    ports:
+      - "3002:3000"
+    volumes:
+      - ../roundlog-web/apps/pwa:/app
+      - pwa_node_modules:/app/node_modules
+      - pwa_next_cache:/app/.next
 
 volumes:
   postgres_data:
+  audio_storage:
+  api_node_modules:
+  web_node_modules:
+  pwa_node_modules:
+  web_next_cache:
+  pwa_next_cache:
