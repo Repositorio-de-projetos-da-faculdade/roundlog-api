@@ -1,20 +1,32 @@
-# docker-compose.yml (raiz do projeto)
 services:
   postgres:
     image: postgres:15
+    container_name: roundlog-postgres
     environment:
       POSTGRES_DB: roundlog
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
     ports:
-      - "5432:5432"
+      # host:container — uso 5433 no host para não conflitar com outros projetos
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d roundlog"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine
+    container_name: roundlog-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
 volumes:
   postgres_data:

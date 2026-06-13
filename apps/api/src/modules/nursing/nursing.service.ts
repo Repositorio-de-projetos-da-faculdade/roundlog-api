@@ -1,10 +1,10 @@
 // src/modules/nursing/nursing.service.ts
 import { prisma } from "../../shared/prisma.js";
+import { NotFoundError } from "../../shared/errors.js";
 import type { ExecuteConductInput } from "./nursing.schema.js";
 
 export class NursingService {
   async getWardDashboard(wardId: string, hospitalId: string) {
-    // Verifica que a ala pertence ao hospital
     await prisma.ward.findFirstOrThrow({
       where: { id: wardId, hospitalId },
     });
@@ -33,31 +33,52 @@ export class NursingService {
     return beds;
   }
 
-  async executeConduct(conductId: string, data: ExecuteConductInput, nurseId: string) {
-    const execution = await prisma.nursingExecution.create({
-      data: {
-        conductId,
-        shiftId: data.shiftId,
-        nurseId,
-        notes: data.notes,
-        status: data.status,
+  async executeConduct(
+    conductId: string,
+    data: ExecuteConductInput,
+    nurseId: string,
+    hospitalId: string,
+  ) {
+    // Garante que a conduta pertence ao hospital do enfermeiro
+    const conduct = await prisma.conduct.findFirst({
+      where: {
+        id: conductId,
+        visit: { admission: { bed: { ward: { hospitalId } } } },
       },
     });
+    if (!conduct) throw new NotFoundError("Conduta");
 
-    // Se executado com sucesso, marca conduta como IN_PROGRESS
-    if (data.status === "done") {
-      await prisma.conduct.update({
-        where: { id: conductId },
-        data: { status: "RESOLVED", resolvedById: nurseId, resolvedAt: new Date() },
-      });
-    } else {
-      await prisma.conduct.update({
-        where: { id: conductId },
-        data: { status: "IN_PROGRESS" },
-      });
-    }
+    // Garante que o turno também pertence ao hospital
+    const shift = await prisma.nursingShift.findFirst({
+      where: { id: data.shiftId, ward: { hospitalId } },
+    });
+    if (!shift) throw new NotFoundError("Turno de enfermagem");
 
-    return execution;
+    return prisma.$transaction(async (tx) => {
+      const execution = await tx.nursingExecution.create({
+        data: {
+          conductId,
+          shiftId: data.shiftId,
+          nurseId,
+          notes: data.notes,
+          status: data.status,
+        },
+      });
+
+      if (data.status === "done") {
+        await tx.conduct.update({
+          where: { id: conductId },
+          data: { status: "RESOLVED", resolvedById: nurseId, resolvedAt: new Date() },
+        });
+      } else {
+        await tx.conduct.update({
+          where: { id: conductId },
+          data: { status: "IN_PROGRESS" },
+        });
+      }
+
+      return execution;
+    });
   }
 
   async getOverdueConducts(hospitalId: string) {

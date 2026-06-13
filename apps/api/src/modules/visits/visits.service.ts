@@ -1,11 +1,18 @@
 // src/modules/visits/visits.service.ts
 import { prisma } from "../../shared/prisma.js";
 import { audioQueue } from "../../shared/queue.js";
+import { NotFoundError } from "../../shared/errors.js";
 import type { CreateVisitInput } from "./visits.schema.js";
 import type { MultipartFile } from "@fastify/multipart";
 
 export class VisitsService {
-  async createVisit(data: CreateVisitInput, physicianId: string) {
+  async createVisit(data: CreateVisitInput, physicianId: string, hospitalId: string) {
+    // Garante que a internação pertence ao mesmo hospital do médico
+    const admission = await prisma.admission.findFirst({
+      where: { id: data.admissionId, bed: { ward: { hospitalId } } },
+    });
+    if (!admission) throw new NotFoundError("Internação");
+
     return prisma.visit.create({
       data: {
         admissionId: data.admissionId,
@@ -15,30 +22,35 @@ export class VisitsService {
     });
   }
 
-  async uploadAndEnqueueAudio(visitId: string, file: MultipartFile) {
-    // 1. Converte o stream para buffer
+  async uploadAndEnqueueAudio(visitId: string, file: MultipartFile, hospitalId: string) {
+    // Garante scope antes de processar o upload
+    const visit = await prisma.visit.findFirst({
+      where: { id: visitId, admission: { bed: { ward: { hospitalId } } } },
+    });
+    if (!visit) throw new NotFoundError("Visita");
+
+    // Converte o stream para buffer
     const chunks: Buffer[] = [];
     for await (const chunk of file.file) {
       chunks.push(chunk);
     }
     const buffer = Buffer.concat(chunks);
 
-    // TODO: Salvar no storage (S3 / Uploadthing)
-    const audioUrl = `local://uploads/visits/${visitId}/${file.filename}`;
+    // Storage local: grava no disco e salva caminho relativo
+    const { saveAudioFile } = await import("../../shared/storage.js");
+    const audioUrl = await saveAudioFile(visitId, file.filename, buffer);
 
-    // 2. Atualiza o visit com a URL e muda status
     await prisma.visit.update({
       where: { id: visitId },
       data: { audioUrl, status: "PROCESSING" },
     });
 
-    // 3. Enfileira o processamento
     await audioQueue.add("process-visit-audio", { visitId, audioUrl });
   }
 
-  async getVisit(id: string) {
-    return prisma.visit.findUniqueOrThrow({
-      where: { id },
+  async getVisit(id: string, hospitalId: string) {
+    const visit = await prisma.visit.findFirst({
+      where: { id, admission: { bed: { ward: { hospitalId } } } },
       include: {
         conducts: true,
         pendings: true,
@@ -52,9 +64,19 @@ export class VisitsService {
         },
       },
     });
+    if (!visit) throw new NotFoundError("Visita");
+    return visit;
   }
 
-  async resolveConductById(conductId: string, userId: string) {
+  async resolveConductById(conductId: string, userId: string, hospitalId: string) {
+    const conduct = await prisma.conduct.findFirst({
+      where: {
+        id: conductId,
+        visit: { admission: { bed: { ward: { hospitalId } } } },
+      },
+    });
+    if (!conduct) throw new NotFoundError("Conduta");
+
     return prisma.conduct.update({
       where: { id: conductId },
       data: {
@@ -65,7 +87,15 @@ export class VisitsService {
     });
   }
 
-  async resolvePendingById(pendingId: string, userId: string) {
+  async resolvePendingById(pendingId: string, userId: string, hospitalId: string) {
+    const pending = await prisma.pending.findFirst({
+      where: {
+        id: pendingId,
+        visit: { admission: { bed: { ward: { hospitalId } } } },
+      },
+    });
+    if (!pending) throw new NotFoundError("Pendência");
+
     return prisma.pending.update({
       where: { id: pendingId },
       data: {
@@ -76,7 +106,15 @@ export class VisitsService {
     });
   }
 
-  async acknowledgeAlertById(alertId: string, userId: string) {
+  async acknowledgeAlertById(alertId: string, userId: string, hospitalId: string) {
+    const alert = await prisma.clinicalAlert.findFirst({
+      where: {
+        id: alertId,
+        visit: { admission: { bed: { ward: { hospitalId } } } },
+      },
+    });
+    if (!alert) throw new NotFoundError("Alerta clínico");
+
     return prisma.clinicalAlert.update({
       where: { id: alertId },
       data: {

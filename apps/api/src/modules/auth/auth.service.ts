@@ -14,9 +14,18 @@ export class AuthService {
       throw new ConflictError("E-mail já cadastrado");
     }
 
+    // Garante que o hospital existe — evita FK ruim que confunde o usuário
+    const hospital = await prisma.hospital.findUnique({
+      where: { id: data.hospitalId },
+      select: { id: true },
+    });
+    if (!hospital) {
+      throw new ConflictError("Hospital não encontrado");
+    }
+
     const passwordHash = await hashPassword(data.password);
 
-    const user = await prisma.user.create({
+    return prisma.user.create({
       data: {
         name: data.name,
         email: data.email,
@@ -35,8 +44,6 @@ export class AuthService {
         createdAt: true,
       },
     });
-
-    return user;
   }
 
   async login(data: LoginInput) {
@@ -61,5 +68,18 @@ export class AuthService {
       hospitalId: user.hospitalId,
       name: user.name,
     };
+  }
+
+  async findById(id: string) {
+    return prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        hospitalId: true,
+        name: true,
+      },
+    });
   }
 }

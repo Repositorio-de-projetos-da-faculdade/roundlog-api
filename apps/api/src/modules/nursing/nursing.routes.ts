@@ -8,7 +8,6 @@ import { executeConductSchema } from "./nursing.schema.js";
 export async function nursingRoutes(app: FastifyInstance) {
   const service = new NursingService();
 
-  // GET /wards/:id/dashboard — todos os leitos com status atual
   app.get("/wards/:id/dashboard", {
     preHandler: [authenticate],
   }, async (req, reply) => {
@@ -17,17 +16,15 @@ export async function nursingRoutes(app: FastifyInstance) {
     return reply.send(dashboard);
   });
 
-  // POST /conducts/:id/execute — registro de execução pela enfermagem
   app.post("/conducts/:id/execute", {
     preHandler: [authenticate, authorize(["NURSE", "TECHNICIAN"])],
   }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const body = executeConductSchema.parse(req.body);
-    const execution = await service.executeConduct(id, body, req.user.id);
+    const execution = await service.executeConduct(id, body, req.user.id, req.user.hospitalId);
     return reply.status(201).send(execution);
   });
 
-  // GET /nursing/overdue — condutas em atraso
   app.get("/nursing/overdue", {
     preHandler: [authenticate],
   }, async (req, reply) => {

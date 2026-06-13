@@ -1,11 +1,29 @@
 // src/modules/near-misses/near-misses.service.ts
 import { prisma } from "../../shared/prisma.js";
+import { gemini, isGeminiEnabled } from "../../shared/gemini.js";
 import type { CreateNearMissInput } from "./near-misses.schema.js";
 
 export class NearMissesService {
   async create(data: CreateNearMissInput, hospitalId: string) {
-    return prisma.nearMiss.create({
+    const created = await prisma.nearMiss.create({
       data: { ...data, hospitalId },
+    });
+
+    // Classificação IA assíncrona — não bloqueia a resposta ao usuário.
+    if (isGeminiEnabled()) {
+      void this.classifyAsync(created.id, created.description).catch((err) => {
+        console.error(`Falha ao classificar near miss ${created.id}:`, err);
+      });
+    }
+
+    return created;
+  }
+
+  private async classifyAsync(id: string, description: string) {
+    const classification = await gemini.classifyNearMiss(description);
+    await prisma.nearMiss.update({
+      where: { id },
+      data: { aiClassificationJson: classification as unknown as object },
     });
   }
 

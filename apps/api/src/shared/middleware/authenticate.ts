@@ -8,8 +8,9 @@ export interface JWTPayload {
   hospitalId: string;
 }
 
-declare module "fastify" {
-  interface FastifyRequest {
+declare module "@fastify/jwt" {
+  interface FastifyJWT {
+    payload: JWTPayload;
     user: JWTPayload;
   }
 }
